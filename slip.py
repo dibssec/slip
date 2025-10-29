@@ -37,6 +37,8 @@ class Util:
 	PAYLOAD_PATH_PLACEHOLDER = "{FILE}"
 
 	MULTIPLE_FILE_CONTENTS_SPLIT = "&&&&&&"
+
+	DEFAULT_FILEMODE = 0o644
 	
 	extensions = { 
 			("tar","none"): ".tar",
@@ -276,7 +278,7 @@ class SevenZipper:
 		# py7zr doesn't use "fileinfo" files
 		return filename
 	
-	def add_file(self, file_info, content, symlink=False):
+	def add_file(self, file_info, content, symlink=False, mode=Util.DEFAULT_FILEMODE):
 		'''Adds file to archive given fileinfo and file content'''
 		
 		self.archive.writestr(content, file_info) 
@@ -319,7 +321,7 @@ class Tarrer:
 		
 		return ti
 
-	def add_file(self, file_info, content, symlink=False):
+	def add_file(self, file_info, content, symlink=False, mode=Util.DEFAULT_FILEMODE):
 		if symlink:
 			file_info.type = SYMTYPE
 			file_info.linkname = content
@@ -331,6 +333,7 @@ class Tarrer:
 			# If you write something in the symlink file, it breaks the archive
 			self.archive.addfile(file_info, None)
 		else:
+			file_info.mode = mode
 			if not isinstance(content, str):
 				tmp_content = BytesIO(content)
 			else:
@@ -370,7 +373,7 @@ class Zipper:
 		
 		return zi
 	
-	def add_file(self, file_info, content, symlink=False):
+	def add_file(self, file_info, content, symlink=False, mode=Util.DEFAULT_FILEMODE):
 		'''Adds file to archive given zipinfo and file content'''
 		if symlink:
 			file_info.external_attr |= stat.S_IFLNK << 16 # symlink file type
@@ -507,7 +510,20 @@ def main_procedure(archive_type, compression, paths, symlinks, file_content, jso
 				content = entry.get("content")
 				etype = entry.get("type")
 				tbase64 = entry.get("base64")
+				mode = entry.get("mode")
 				ext_content = None
+
+				# Check mode to ensure it is reasonable
+				# If not set, use default
+				if mode is not None:
+					try:
+						mode = int(str(mode).lstrip('0o'), 8)
+						if not (0<=mode<=0o777):
+							raise ValueError
+					except Exception:
+						raise ValueError(f"Invalid file mode {mode} for entry {file}")
+				else:
+					mode = DEFAULT_FILEMODE
 
 				if etype == "symlink":
 					symlinks.append(file)
@@ -516,16 +532,17 @@ def main_procedure(archive_type, compression, paths, symlinks, file_content, jso
 					if tbase64:
 						try:
 							ext_content = base64.b64decode(content)
-							paths.append((file, ext_content))
+							paths.append((file, ext_content, mode))
 						except(binascii.Error, ValueError):
 							print(Util.YELLOW+f"[*] Invalid base64 string content for file \"{file}\", skipping."+Util.END)
 					else:
-						paths.append((file, content))
+						paths.append((file, content, mode))
 				else:
 					print(Util.YELLOW+f"[*] Unknown file type \"{etype}\" for file {file}, skipping."+Util.END)
 
 	if mass_find:
 		# Overrides search mode
+        # Uses DEFAULT_FILEMODE
 		dotdotslash = None
 		search = None
 		
@@ -542,7 +559,7 @@ def main_procedure(archive_type, compression, paths, symlinks, file_content, jso
 					exit(1)
 				else:
 					path = line.replace(mass_find_placeholder, mass_find).rstrip()
-					paths.append((path, file_content))
+					paths.append((path, file_content, DEFAULT_FILEMODE))
 				
 			elif mass_find_mode == "symlinks":
 				symlink = line.replace(mass_find_placeholder, mass_find).rstrip()
@@ -590,6 +607,7 @@ def main_procedure(archive_type, compression, paths, symlinks, file_content, jso
 	if paths:
 		for iterator in paths:
 			if isinstance(iterator, tuple):
+				mode = iterator[2]
 				fc = iterator[1]
 				f = iterator[0]
 			else:
@@ -597,7 +615,7 @@ def main_procedure(archive_type, compression, paths, symlinks, file_content, jso
 
 			if not search:
 				fi = a.create_fileinfo(f)
-				a.add_file(fi, fc)
+				a.add_file(fi, fc, mode=mode)
 			else:
 				if dotdotslash:
 					fp = Searcher.gen_search_paths(f, search, payload=dotdotslash)
@@ -606,7 +624,7 @@ def main_procedure(archive_type, compression, paths, symlinks, file_content, jso
 					
 				for ffp in fp:
 					fi = a.create_fileinfo(ffp)
-					a.add_file(fi, fc)
+					a.add_file(fi, fc, mode=mode)
 				
 	if verbose:
 		Util.archive_info(a, archive_type, compression)
